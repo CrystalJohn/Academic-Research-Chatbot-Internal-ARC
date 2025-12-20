@@ -105,4 +105,13 @@ amplifyconfiguration*
 start-dev.sh
 test-local-bedrock.py
 TESTING_READY.md
-/docs
+
+# Vite cache
+.vite/
+
+# Temporary/local files
+REFACTOR_CHECKLIST.md
+
+# Old CI/CD configs (replaced by GitHub Actions)
+buildspec-backend.yml
+buildspec-frontend.yml
