@@ -91,6 +91,7 @@ resource "aws_iam_role_policy" "ec2_bedrock_policy" {
         Action = [
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream"
+          # Note: bedrock:Converse disabled for MVP (3x cost)
         ]
         Resource = [
           "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
@@ -242,6 +243,7 @@ resource "aws_iam_user_policy" "backend_idp_policy" {
           "dynamodb:*",
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream",
+          # Note: bedrock:Converse disabled for MVP (3x cost)
           "textract:*",
           "sqs:*"
         ]

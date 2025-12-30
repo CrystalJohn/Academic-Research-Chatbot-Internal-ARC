@@ -58,7 +58,7 @@ def create_callbacks():
         return embedding_service.embed_text(text)
     
     def store_vectors_callback(doc_id: str, chunks: list, vectors: list, metadata: dict):
-        """Store vectors in Qdrant with page metadata."""
+        """Store vectors in Qdrant with page metadata and document metadata."""
         # Filter out None vectors
         valid_data = [(c, v) for c, v in zip(chunks, vectors) if v is not None]
         if not valid_data:
@@ -73,11 +73,22 @@ def create_callbacks():
             texts = [c["text"] for c in valid_chunks]
             pages = [c.get("page", 1) for c in valid_chunks]
             is_tables = [c.get("is_table", False) for c in valid_chunks]
+            section_titles = [c.get("section_title", "") for c in valid_chunks]
         else:
             # Legacy format (just strings)
             texts = list(valid_chunks)
             pages = None
             is_tables = None
+            section_titles = None
+        
+        # Extract document-level metadata
+        file_type = metadata.get("file_type", "")
+        s3_key = metadata.get("key", "")
+        filename = s3_key.split("/")[-1] if s3_key else ""
+        
+        # Get title from file_metadata (for .md, .ipynb) or pdf_metadata
+        file_metadata = metadata.get("file_metadata", {}) or metadata.get("pdf_metadata", {})
+        title = file_metadata.get("title", "") if isinstance(file_metadata, dict) else ""
         
         try:
             count = qdrant_store.upsert_vectors(
@@ -85,9 +96,14 @@ def create_callbacks():
                 texts=texts,
                 vectors=list(valid_vectors),
                 pages=pages,
-                is_tables=is_tables
+                is_tables=is_tables,
+                # New metadata fields
+                filename=filename,
+                file_type=file_type,
+                title=title,
+                section_titles=section_titles,
             )
-            logger.info(f"Stored {count} vectors for {doc_id}")
+            logger.info(f"Stored {count} vectors for {doc_id} (file_type={file_type}, filename={filename})")
             return True
         except Exception as e:
             logger.error(f"Error storing vectors: {e}")

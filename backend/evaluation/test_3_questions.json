@@ -1,0 +1,13 @@
+{
+  "questions": [
+    "OOP là gì?",
+    "Design pattern là gì?",
+    "What is machine learning?"
+  ],
+  "ground_truths": [
+    "OOP (Object-Oriented Programming) là phương pháp lập trình dựa trên khái niệm đối tượng.",
+    "Design pattern là các giải pháp tái sử dụng cho các vấn đề phổ biến trong thiết kế phần mềm.",
+    "Machine learning is a subset of AI that enables systems to learn from data."
+  ],
+  "created_at": "2025-12-20T00:00:00"
+}

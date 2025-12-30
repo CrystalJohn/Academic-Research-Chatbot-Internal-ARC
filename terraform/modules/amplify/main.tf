@@ -8,7 +8,7 @@ resource "aws_amplify_app" "main" {
   name       = "${var.project_name}-${var.environment}-frontend"
   repository = var.repository_url  # Git repository URL
 
-  # Build settings
+  # Build settings for Vite
   build_spec = <<-EOT
     version: 1
     frontend:
@@ -20,7 +20,7 @@ resource "aws_amplify_app" "main" {
           commands:
             - npm run build
       artifacts:
-        baseDirectory: build
+        baseDirectory: dist
         files:
           - '**/*'
       cache:
@@ -28,12 +28,12 @@ resource "aws_amplify_app" "main" {
           - node_modules/**/*
   EOT
 
-  # Environment variables
+  # Environment variables (Vite uses VITE_ prefix)
   environment_variables = {
-    REACT_APP_API_URL           = var.api_url
-    REACT_APP_COGNITO_POOL_ID   = var.cognito_pool_id
-    REACT_APP_COGNITO_CLIENT_ID = var.cognito_client_id
-    REACT_APP_REGION            = var.aws_region
+    VITE_API_URL           = var.api_url
+    VITE_COGNITO_POOL_ID   = var.cognito_pool_id
+    VITE_COGNITO_CLIENT_ID = var.cognito_client_id
+    VITE_AWS_REGION        = var.aws_region
   }
 
   # Custom rules for SPA routing

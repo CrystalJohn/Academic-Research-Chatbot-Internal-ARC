@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.services.email_service import get_email_service
+from app.services.common.email_service import get_email_service
 
 logger = logging.getLogger(__name__)
 

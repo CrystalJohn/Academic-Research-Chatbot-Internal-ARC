@@ -22,25 +22,29 @@ from fastapi import APIRouter, HTTPException, Query, Response, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.services.rag_service import RAGService, PromptTemplate, RAGResponse, is_greeting, GREETING_RESPONSES
-from app.services.qdrant_client import SearchFilter
-from app.services.chat_history_manager import (
+from app.services.search.rag_service import RAGService, PromptTemplate, RAGResponse, is_greeting, GREETING_RESPONSES
+from app.services.search.qdrant_client import SearchFilter
+from app.services.chat.chat_history_manager import (
     ChatHistoryManager,
     CachedChatHistoryManager,
     ChatMessage,
     MessageRole,
     create_chat_history_manager,
 )
-from app.services.rate_limiter import (
+from app.services.common.rate_limiter import (
     RateLimiter,
     RateLimitExceeded,
     get_rate_limiter,
 )
-from app.services.budget_manager import get_budget_manager
-from app.services.auth_service import (
+from app.services.common.budget_manager import get_budget_manager
+from app.services.auth.auth_service import (
     CurrentUser,
     get_current_user,
     get_current_user_optional,
+)
+from app.services.ai.query_enhancement_service import (
+    get_query_enhancement_service,
+    QueryAnalysis,
 )
 
 logger = logging.getLogger(__name__)
@@ -610,7 +614,7 @@ async def chat_stream(
         logger.info(f"Retrieved {len(contexts)} contexts for citations")
         
         # Get filenames for doc_ids
-        from app.services.document_status_manager import DocumentStatusManager
+        from app.services.document.document_status_manager import DocumentStatusManager
         status_manager = DocumentStatusManager()
         filename_map = {}
         doc_ids = list(set(ctx.doc_id for ctx in contexts))
@@ -743,7 +747,7 @@ async def get_document_info(
     This endpoint allows regular users to view document metadata
     for citations without requiring admin access.
     """
-    from app.services.document_status_manager import DocumentStatusManager
+    from app.services.document.document_status_manager import DocumentStatusManager
     
     try:
         status_manager = DocumentStatusManager()
@@ -949,3 +953,79 @@ async def delete_conversation(
     except Exception as e:
         logger.error(f"Failed to delete conversation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== Query Enhancement Endpoint ==============
+
+class QueryEnhancementRequest(BaseModel):
+    """Request for query enhancement."""
+    query: str = Field(..., min_length=1, max_length=2000, description="User query to analyze")
+
+
+class QuerySuggestionResponse(BaseModel):
+    """Suggestion for query improvement."""
+    category: str
+    suggestion: str
+    improved_query: str
+
+
+class QueryEnhancementResponse(BaseModel):
+    """Response with query analysis and suggestions."""
+    original_query: str
+    quality_score: float
+    is_good_quality: bool
+    suggestions: List[QuerySuggestionResponse]
+    improved_query: Optional[str]
+
+
+@router.post("/enhance-query", response_model=QueryEnhancementResponse)
+async def enhance_query(
+    request: QueryEnhancementRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Đánh giá chất lượng câu hỏi và đề xuất cải thiện.
+    
+    REQUIRES: Authentication (valid Cognito token)
+    
+    Phân tích câu hỏi theo các tiêu chí:
+    - Specificity: Tính cụ thể
+    - Comparative approach: Yếu tố so sánh
+    - Impact assessment: Đánh giá tác động
+    - Context: Ngữ cảnh
+    - Scope: Phạm vi
+    
+    Trả về:
+    - quality_score: Điểm chất lượng (0-1)
+    - is_good_quality: True nếu không cần cải thiện
+    - suggestions: Danh sách gợi ý cải thiện
+    - improved_query: Câu hỏi đã cải thiện tổng hợp
+    """
+    try:
+        enhancement_service = get_query_enhancement_service()
+        
+        # Phân tích query
+        analysis = enhancement_service.analyze_query(request.query)
+        
+        # Convert to response
+        return QueryEnhancementResponse(
+            original_query=analysis.original_query,
+            quality_score=analysis.quality_score,
+            is_good_quality=analysis.is_good_quality,
+            suggestions=[
+                QuerySuggestionResponse(
+                    category=s.category,
+                    suggestion=s.suggestion,
+                    improved_query=s.improved_query
+                )
+                for s in analysis.suggestions
+            ],
+            improved_query=analysis.improved_query
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to enhance query: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to analyze query. Please try again."
+        )

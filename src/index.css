@@ -23,3 +23,24 @@ body {
   min-height: 100vh;
   width: 100%;
 }
+
+/* Citation Popover Animation */
+@keyframes popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.citation-popover {
+  animation: popover-in 0.15s ease-out;
+}
+
+/* Citation Badge Hover Effect */
+.citation-badge:hover {
+  transform: scale(1.05);
+}

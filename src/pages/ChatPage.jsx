@@ -4,11 +4,10 @@ import { authService } from '../services/authService'
 import { chatService } from '../services/chatService'
 import { Spinner } from '@heroui/react'
 import { motion, AnimatePresence } from 'framer-motion'
-import ReactMarkdown from 'react-markdown'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import DocumentViewerModal from '../components/DocumentViewerModal'
+import AnswerWithCitations from '../components/AnswerWithCitations'
 import Sidebar from '../components/Sidebar'
+import QueryEnhancement from '../components/QueryEnhancement'
 import arcLogo from '../assets/Logo ARC-chatbot.png'
 
 function ChatPage() {
@@ -17,7 +16,7 @@ function ChatPage() {
     {
       role: 'assistant',
       content:
-        'Hello! I can help you search through academic research papers. Ask me anything about recent studies, specific methodologies, or key findings in your field.',
+        'Xin chào! 👋 Tôi là ARC Chatbot - trợ lý nghiên cứu tài liệu của bạn.\n\nTôi có thể giúp bạn:\n📚 Tìm kiếm thông tin trong các tài liệu đã upload\n📝 Trả lời câu hỏi dựa trên nội dung tài liệu\n🔍 Trích dẫn nguồn chính xác với số trang\n\nBạn muốn hỏi về vấn đề gì trong tài liệu? Hãy đặt câu hỏi cụ thể để tôi hỗ trợ tốt nhất nhé! 😊',
       timestamp: new Date().toISOString(),
     },
   ])
@@ -32,6 +31,7 @@ function ChatPage() {
   const [activeMenu, setActiveMenu] = useState('chat')
   const [activeSubMenu, setActiveSubMenu] = useState('current')
   const [darkMode, setDarkMode] = useState(false)
+  const [showEnhancement, setShowEnhancement] = useState(false)
   const messagesEndRef = useRef(null)
 
   // History state
@@ -143,6 +143,9 @@ function ChatPage() {
   const handleSend = async (e) => {
     e.preventDefault()
     if (!input.trim() || loading) return
+
+    // Ẩn enhancement panel khi gửi
+    setShowEnhancement(false)
 
     const userQuery = input
     const userMessage = {
@@ -265,7 +268,7 @@ function ChatPage() {
       {
         role: 'assistant',
         content:
-          'Hello! I can help you search through academic research papers. Ask me anything about recent studies, specific methodologies, or key findings in your field.',
+          'Xin chào! 👋 Tôi là ARC Chatbot - trợ lý nghiên cứu tài liệu của bạn.\n\nTôi có thể giúp bạn:\n📚 Tìm kiếm thông tin trong các tài liệu đã upload\n📝 Trả lời câu hỏi dựa trên nội dung tài liệu\n🔍 Trích dẫn nguồn chính xác với số trang\n\nBạn muốn hỏi về vấn đề gì trong tài liệu? Hãy đặt câu hỏi cụ thể để tôi hỗ trợ tốt nhất nhé! 😊',
         timestamp: new Date().toISOString(),
       },
     ])
@@ -518,92 +521,62 @@ function ChatPage() {
                               : 'bg-white text-gray-800'
                         } shadow-sm`}
                       >
-                        <div className="text-sm leading-relaxed prose prose-sm max-w-none dark:prose-invert">
-                          {msg.isStreaming ? (
-                            // Show plain text while streaming for better UX
+                        {msg.isStreaming ? (
+                          // Show plain text while streaming for better UX
+                          <div className="text-sm leading-relaxed">
                             <p className="whitespace-pre-wrap">
                               {msg.content}
                               <span className="inline-block w-2 h-4 ml-1 bg-blue-500 animate-pulse rounded-sm" />
                             </p>
-                          ) : (
-                            // Render markdown when streaming is complete
-                            <ReactMarkdown
-                              components={{
-                                code({ node, inline, className, children, ...props }) {
-                                  const match = /language-(\w+)/.exec(className || '')
-                                  return !inline && match ? (
-                                    <SyntaxHighlighter
-                                      style={oneDark}
-                                      language={match[1]}
-                                      PreTag="div"
-                                      className="rounded-lg text-xs"
-                                      {...props}
-                                    >
-                                      {String(children).replace(/\n$/, '')}
-                                    </SyntaxHighlighter>
-                                  ) : (
-                                    <code className="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded text-xs font-mono" {...props}>
-                                      {children}
-                                    </code>
-                                  )
-                                },
-                                h2: ({ children }) => (
-                                  <h2 className="text-base font-semibold text-gray-800 dark:text-gray-200 mt-4 mb-2">{children}</h2>
-                                ),
-                                h3: ({ children }) => (
-                                  <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mt-3 mb-1">{children}</h3>
-                                ),
-                                ul: ({ children }) => (
-                                  <ul className="list-disc list-inside space-y-1 my-2">{children}</ul>
-                                ),
-                                ol: ({ children }) => (
-                                  <ol className="list-decimal list-inside space-y-1 my-2">{children}</ol>
-                                ),
-                                p: ({ children }) => (
-                                  <p className="my-2">{children}</p>
-                                ),
-                                strong: ({ children }) => (
-                                  <strong className="font-semibold text-gray-900 dark:text-gray-100">{children}</strong>
-                                ),
-                              }}
-                            >
-                              {msg.content}
-                            </ReactMarkdown>
-                          )}
-                        </div>
-
-                        {msg.citations && msg.citations.length > 0 && !msg.isStreaming && (
-                          <div className="mt-4 pt-3 border-t border-gray-100 space-y-2">
-                            <p className="text-xs text-gray-500 mb-2">📚 Sources:</p>
-                            {msg.citations.map((citation) => {
+                          </div>
+                        ) : (
+                          // Render with inline citation badges
+                          <AnswerWithCitations
+                            content={msg.content}
+                            citations={msg.citations || []}
+                            onViewDocument={(citation) => {
                               const userQuery =
                                 idx > 0 && messages[idx - 1]?.role === 'user'
                                   ? messages[idx - 1].content
                                   : ''
-                              return (
-                                <div
-                                  key={citation.id}
-                                  onClick={() => handleViewDocument(citation, userQuery)}
-                                  className="p-3 bg-blue-50 border border-blue-100 rounded-lg cursor-pointer hover:bg-blue-100 transition-colors"
-                                >
-                                  <p className="text-xs font-medium text-blue-700 mb-1">
-                                    {citation.filename || citation.doc_id?.slice(0, 8) || 'Document'}
-                                  </p>
-                                  <p className="text-xs text-blue-600 line-clamp-2 mb-2">
-                                    {citation.text_snippet}
-                                  </p>
-                                  <div className="flex items-center gap-3 text-xs text-blue-500">
-                                    <span className="px-1.5 py-0.5 bg-blue-200 rounded">
-                                      [{citation.id}]
+                              handleViewDocument(citation, userQuery)
+                            }}
+                            query={
+                              idx > 0 && messages[idx - 1]?.role === 'user'
+                                ? messages[idx - 1].content
+                                : ''
+                            }
+                          />
+                        )}
+
+                        {/* Compact Sources List */}
+                        {msg.citations && msg.citations.length > 0 && !msg.isStreaming && (
+                          <div className="mt-4 pt-3 border-t border-gray-100">
+                            <p className="text-xs text-gray-500 mb-2">📚 Sources ({msg.citations.length}):</p>
+                            <div className="flex flex-wrap gap-2">
+                              {msg.citations.map((citation) => {
+                                const userQuery =
+                                  idx > 0 && messages[idx - 1]?.role === 'user'
+                                    ? messages[idx - 1].content
+                                    : ''
+                                return (
+                                  <button
+                                    key={citation.id}
+                                    onClick={() => handleViewDocument(citation, userQuery)}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-gray-100 hover:bg-blue-100 text-gray-700 hover:text-blue-700 rounded-lg text-xs transition-colors"
+                                    title={citation.text_snippet}
+                                  >
+                                    <span className="font-medium">[{citation.id}]</span>
+                                    <span className="truncate max-w-[120px]">
+                                      {citation.filename || `Doc ${citation.doc_id?.slice(0, 6)}`}
                                     </span>
-                                    {citation.page && <span>Page {citation.page}</span>}
-                                    {citation.score && (
-                                      <span>Score: {Math.round(citation.score)}%</span>
+                                    {citation.page && (
+                                      <span className="text-gray-400">p.{citation.page}</span>
                                     )}
-                                  </div>
-                                </div>
-                              )
-                            })}
+                                  </button>
+                                )
+                              })}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -687,15 +660,59 @@ function ChatPage() {
         {activeMenu === 'chat' && (
         <div className="px-6 py-4">
           <div className="max-w-4xl mx-auto">
+            {/* Query Enhancement */}
+            {showEnhancement && input.trim().length > 5 && (
+              <QueryEnhancement
+                query={input}
+                onApplySuggestion={(improvedQuery) => {
+                  setInput(improvedQuery)
+                  setShowEnhancement(false)
+                }}
+                darkMode={darkMode}
+              />
+            )}
+
             <form onSubmit={handleSend} className="relative">
               <input
                 type="text"
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => {
+                  setInput(e.target.value)
+                  // Tự động hiển thị enhancement khi user gõ đủ dài
+                  if (e.target.value.trim().length > 10 && !showEnhancement) {
+                    setShowEnhancement(true)
+                  }
+                }}
                 placeholder="Enter a prompt here..."
                 disabled={loading}
-                className={`w-full h-12 pl-5 pr-14 text-sm ${darkMode ? 'bg-gray-800 text-white border-gray-700 placeholder:text-gray-500' : 'bg-white text-gray-700 border-gray-200 placeholder:text-gray-400'} border rounded-full focus:outline-none focus:border-blue-300 focus:ring-1 focus:ring-blue-50 transition-all shadow-[0_2px_8px_rgba(0,0,0,0.04)]`}
+                className={`w-full h-12 pl-5 pr-28 text-sm ${darkMode ? 'bg-gray-800 text-white border-gray-700 placeholder:text-gray-500' : 'bg-white text-gray-700 border-gray-200 placeholder:text-gray-400'} border rounded-full focus:outline-none focus:border-blue-300 focus:ring-1 focus:ring-blue-50 transition-all shadow-[0_2px_8px_rgba(0,0,0,0.04)]`}
               />
+              
+              {/* Enhancement toggle button */}
+              {input.trim().length > 5 && !loading && (
+                <button
+                  type="button"
+                  onClick={() => setShowEnhancement(!showEnhancement)}
+                  className={`absolute right-12 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-full transition-colors ${
+                    showEnhancement
+                      ? 'bg-yellow-500 text-white'
+                      : darkMode
+                        ? 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                        : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                  }`}
+                  title="Cải thiện câu hỏi"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+                    />
+                  </svg>
+                </button>
+              )}
+
               <button
                 type="submit"
                 disabled={loading || !input.trim()}

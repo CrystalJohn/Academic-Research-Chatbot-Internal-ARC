@@ -1,0 +1,36 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "S3DeployBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:ListBucket",
+        "s3:DeleteObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::YOUR_DEPLOY_BUCKET_NAME",
+        "arn:aws:s3:::YOUR_DEPLOY_BUCKET_NAME/*"
+      ]
+    },
+    {
+      "Sid": "CodeDeploy",
+      "Effect": "Allow",
+      "Action": [
+        "codedeploy:CreateDeployment",
+        "codedeploy:GetDeployment",
+        "codedeploy:GetDeploymentConfig",
+        "codedeploy:GetApplicationRevision",
+        "codedeploy:RegisterApplicationRevision",
+        "codedeploy:GetApplication"
+      ],
+      "Resource": [
+        "arn:aws:codedeploy:ap-southeast-1:YOUR_ACCOUNT_ID:application:YOUR_APP_NAME",
+        "arn:aws:codedeploy:ap-southeast-1:YOUR_ACCOUNT_ID:deploymentgroup:YOUR_APP_NAME/*",
+        "arn:aws:codedeploy:ap-southeast-1:YOUR_ACCOUNT_ID:deploymentconfig:*"
+      ]
+    }
+  ]
+}

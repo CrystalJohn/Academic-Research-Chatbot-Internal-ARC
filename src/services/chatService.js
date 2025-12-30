@@ -270,6 +270,31 @@ export async function checkBudget() {
   return await response.json()
 }
 
+/**
+ * Enhance query - analyze and suggest improvements
+ * @param {string} query - User query to analyze
+ * @returns {Promise<Object>} Analysis with suggestions
+ */
+export async function enhanceQuery(query) {
+  const token = await authService.getAccessToken()
+  
+  const response = await fetch(`${API_URL}/api/chat/enhance-query`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({ query })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `Failed to enhance query: ${response.status}`)
+  }
+
+  return await response.json()
+}
+
 export const chatService = {
   sendChatMessage,
   sendChatMessageStream,
@@ -277,5 +302,6 @@ export const chatService = {
   listConversations,
   deleteConversation,
   checkRateLimit,
-  checkBudget
+  checkBudget,
+  enhanceQuery
 }

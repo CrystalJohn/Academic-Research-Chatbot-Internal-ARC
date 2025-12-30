@@ -15,14 +15,14 @@ import boto3
 from botocore.exceptions import ClientError, BotoCoreError
 from botocore.config import Config
 
-from app.services.bedrock_retry import (
+from .bedrock_retry import (
     RetryConfig,
     BedrockError,
     create_bedrock_error,
     classify_error,
     BedrockErrorType,
 )
-from app.services.monitoring_service import track_embedding_metrics
+from app.services.common.monitoring_service import track_embedding_metrics
 
 logger = logging.getLogger(__name__)
 

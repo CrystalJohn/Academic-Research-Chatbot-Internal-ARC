@@ -3,6 +3,11 @@ Task #18: SQS Worker for Document Processing Pipeline
 
 Worker polls SQS queue và xử lý documents:
 S3 Event → SQS → Worker → Extract → Chunk → Embeddings → Qdrant
+
+Supported file types:
+- .pdf - PDF documents (Textract/PyPDF2)
+- .md - Markdown files (direct text parsing)
+- .ipynb - Jupyter Notebooks (JSON parsing)
 """
 
 import json
@@ -17,7 +22,8 @@ from botocore.exceptions import ClientError
 
 from .pdf_detector import detect_pdf_type, PDFType
 from .pdf_extractor import extract_text_from_pdf, extract_pdf_auto, TextractExtractor
-from .text_chunker import chunk_text, chunk_text_with_tables, TextChunk
+from app.services.search.text_chunker import chunk_text, chunk_text_with_tables, TextChunk
+from .file_processors import ProcessorFactory, SUPPORTED_FILE_TYPES
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -293,6 +299,21 @@ class SQSWorker:
         filename = key.split('/')[-1]
         return filename.rsplit('.', 1)[0]
     
+    def _get_file_type(self, key: str, s3_metadata: dict = None) -> str:
+        """Determine file type from S3 key or metadata."""
+        # Try metadata first (set during upload)
+        if s3_metadata and s3_metadata.get("file_type"):
+            return s3_metadata["file_type"]
+        
+        # Fallback to extension from key
+        if "." in key:
+            ext = "." + key.lower().rsplit(".", 1)[-1]
+            if ext in SUPPORTED_FILE_TYPES:
+                return ext
+        
+        # Default to PDF for backward compatibility
+        return ".pdf"
+    
     def _process_document(
         self, 
         bucket: str, 
@@ -301,13 +322,14 @@ class SQSWorker:
     ) -> ProcessingResult:
         """
         Process a document: download, extract, chunk, embed, store.
+        Supports PDF, Markdown, and Jupyter Notebook files.
         """
         try:
-            # 1. Download PDF from S3
+            # 1. Download file from S3
             logger.info(f"Downloading from s3://{bucket}/{key}")
-            pdf_bytes = self._download_from_s3(bucket, key)
+            file_bytes, s3_metadata = self._download_from_s3_with_metadata(bucket, key)
             
-            if not pdf_bytes:
+            if not file_bytes:
                 return ProcessingResult(
                     document_id=document_id,
                     status=ProcessingStatus.FAILED,
@@ -316,121 +338,23 @@ class SQSWorker:
                     error_message="Failed to download file from S3"
                 )
             
-            # 2. Detect PDF type
-            pdf_type = detect_pdf_type(pdf_bytes)
-            logger.info(f"PDF type detected: {pdf_type}")
+            # 2. Determine file type
+            file_type = self._get_file_type(key, s3_metadata)
+            logger.info(f"File type: {file_type}")
             
-            if pdf_type == PDFType.UNKNOWN:
-                return ProcessingResult(
-                    document_id=document_id,
-                    status=ProcessingStatus.FAILED,
-                    chunks_count=0,
-                    total_chars=0,
-                    error_message="Unknown PDF type - cannot process"
-                )
-            
-            # 3. Extract text (auto-detect: PyPDF2 for digital, Textract for scanned)
-            logger.info("Extracting text from PDF...")
-            pdf_content = extract_pdf_auto(
-                pdf_bytes, 
-                use_textract_for_scanned=True,
-                textract_region=self.region
-            )
-            logger.info(f"Extraction method: {pdf_content.extraction_method}")
-            
-            if not pdf_content.full_text:
-                return ProcessingResult(
-                    document_id=document_id,
-                    status=ProcessingStatus.FAILED,
-                    chunks_count=0,
-                    total_chars=0,
-                    error_message="No text extracted from PDF"
-                )
-            
-            # 4. Chunk text with table handling
-            logger.info("Chunking text with table detection...")
-            
-            # Collect tables from all pages
-            all_tables = []
-            table_names = []
-            for page in pdf_content.pages:
-                if page.tables:
-                    for i, table in enumerate(page.tables):
-                        all_tables.append(table)
-                        table_names.append(f"Table (Page {page.page_number}, #{i+1})")
-            
-            if all_tables:
-                logger.info(f"Found {len(all_tables)} tables, using row-based chunking with header injection")
-                chunks = chunk_text_with_tables(
-                    text=pdf_content.full_text,
-                    tables=all_tables,
-                    table_names=table_names,
-                    rows_per_chunk=5  # 5 rows per table chunk
-                )
+            # 3. Route to appropriate processor
+            if file_type == ".pdf":
+                return self._process_pdf(file_bytes, bucket, key, document_id)
+            elif file_type in [".md", ".ipynb"]:
+                return self._process_text_file(file_bytes, file_type, bucket, key, document_id)
             else:
-                # No tables from extractor, try to detect in text
-                chunks = chunk_text_with_tables(
-                    text=pdf_content.full_text,
-                    tables=None,  # Will auto-detect
-                    rows_per_chunk=5
+                return ProcessingResult(
+                    document_id=document_id,
+                    status=ProcessingStatus.FAILED,
+                    chunks_count=0,
+                    total_chars=0,
+                    error_message=f"Unsupported file type: {file_type}"
                 )
-            
-            # Count table vs text chunks
-            table_chunks = [c for c in chunks if c.is_table]
-            text_chunks = [c for c in chunks if not c.is_table]
-            logger.info(f"Created {len(chunks)} chunks ({len(table_chunks)} table, {len(text_chunks)} text)")
-            
-            # 5. Generate embeddings (if callback provided)
-            vectors = []
-            if self.embeddings_callback and chunks:
-                logger.info("Generating embeddings...")
-                for chunk in chunks:
-                    try:
-                        vector = self.embeddings_callback(chunk.text)
-                        vectors.append(vector)
-                    except Exception as e:
-                        logger.error(f"Error generating embedding: {e}")
-                        vectors.append(None)
-            
-            # 6. Store vectors (if callback provided)
-            if self.store_vectors_callback and vectors:
-                logger.info("Storing vectors...")
-                
-                # Build chunk data with page info
-                chunk_data = []
-                for i, chunk in enumerate(chunks):
-                    # Estimate page from character position
-                    # Assume ~3000 chars per page for digital PDFs
-                    estimated_page = (chunk.start_char // 3000) + 1 if chunk.start_char > 0 else 1
-                    estimated_page = min(estimated_page, pdf_content.total_pages)
-                    
-                    chunk_data.append({
-                        "text": chunk.text,
-                        "page": estimated_page,
-                        "is_table": chunk.is_table,
-                        "chunk_index": i
-                    })
-                
-                metadata = {
-                    "document_id": document_id,
-                    "bucket": bucket,
-                    "key": key,
-                    "total_pages": pdf_content.total_pages,
-                    "pdf_metadata": pdf_content.metadata,
-                    "chunk_data": chunk_data  # Include page info
-                }
-                self.store_vectors_callback(document_id, chunk_data, vectors, metadata)
-            
-            return ProcessingResult(
-                document_id=document_id,
-                status=ProcessingStatus.COMPLETED,
-                chunks_count=len(chunks),
-                total_chars=pdf_content.total_chars,
-                metadata={
-                    "total_pages": pdf_content.total_pages,
-                    "vectors_generated": len([v for v in vectors if v])
-                }
-            )
             
         except Exception as e:
             logger.error(f"Error processing document {document_id}: {e}")
@@ -442,6 +366,241 @@ class SQSWorker:
                 error_message=str(e)
             )
     
+    def _process_text_file(
+        self,
+        file_bytes: bytes,
+        file_type: str,
+        bucket: str,
+        key: str,
+        document_id: str
+    ) -> ProcessingResult:
+        """Process Markdown or Jupyter Notebook files."""
+        try:
+            # Get processor for file type
+            processor = ProcessorFactory.get_processor(file_type)
+            filename = key.split("/")[-1]
+            
+            # Process file
+            logger.info(f"Processing {file_type} file with {processor.__class__.__name__}...")
+            result = processor.process(file_bytes, filename)
+            
+            if not result.text:
+                return ProcessingResult(
+                    document_id=document_id,
+                    status=ProcessingStatus.FAILED,
+                    chunks_count=0,
+                    total_chars=0,
+                    error_message=f"No text extracted from {file_type} file"
+                )
+            
+            logger.info(f"Extracted {len(result.text)} chars, {result.page_count} sections")
+            
+            # Chunk text (use pages/sections as natural boundaries)
+            chunks = chunk_text_with_tables(
+                text=result.text,
+                tables=None,
+                rows_per_chunk=5
+            )
+            logger.info(f"Created {len(chunks)} chunks")
+            
+            # Generate embeddings
+            vectors = []
+            if self.embeddings_callback and chunks:
+                logger.info("Generating embeddings...")
+                for chunk in chunks:
+                    try:
+                        vector = self.embeddings_callback(chunk.text)
+                        vectors.append(vector)
+                    except Exception as e:
+                        logger.error(f"Error generating embedding: {e}")
+                        vectors.append(None)
+            
+            # Store vectors
+            if self.store_vectors_callback and vectors:
+                logger.info("Storing vectors...")
+                
+                chunk_data = []
+                for i, chunk in enumerate(chunks):
+                    # Map chunk to section/page - improved mapping
+                    # For text files, try to find the best matching section
+                    section_idx = 0
+                    section_title = ""
+                    
+                    if result.pages:
+                        # Find section that contains this chunk based on content overlap
+                        # Simple heuristic: use chunk index ratio to estimate section
+                        if len(chunks) > 0 and len(result.pages) > 0:
+                            ratio = i / len(chunks)
+                            section_idx = min(int(ratio * len(result.pages)), len(result.pages) - 1)
+                        section_title = result.pages[section_idx].get("title", "")
+                    
+                    chunk_data.append({
+                        "text": chunk.text,
+                        "page": section_idx + 1,
+                        "section_title": section_title,
+                        "is_table": chunk.is_table,
+                        "chunk_index": i
+                    })
+                
+                metadata = {
+                    "document_id": document_id,
+                    "bucket": bucket,
+                    "key": key,
+                    "file_type": file_type,
+                    "total_pages": result.page_count,
+                    "file_metadata": result.metadata,  # Contains title, kernel info, etc.
+                    "chunk_data": chunk_data
+                }
+                self.store_vectors_callback(document_id, chunk_data, vectors, metadata)
+            
+            return ProcessingResult(
+                document_id=document_id,
+                status=ProcessingStatus.COMPLETED,
+                chunks_count=len(chunks),
+                total_chars=len(result.text),
+                metadata={
+                    "file_type": file_type,
+                    "total_sections": result.page_count,
+                    "vectors_generated": len([v for v in vectors if v])
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Error processing {file_type} file: {e}")
+            return ProcessingResult(
+                document_id=document_id,
+                status=ProcessingStatus.FAILED,
+                chunks_count=0,
+                total_chars=0,
+                error_message=str(e)
+            )
+    
+    def _process_pdf(
+        self,
+        pdf_bytes: bytes,
+        bucket: str,
+        key: str,
+        document_id: str
+    ) -> ProcessingResult:
+        """Process PDF files (original logic)."""
+        # 2. Detect PDF type
+        pdf_type = detect_pdf_type(pdf_bytes)
+        logger.info(f"PDF type detected: {pdf_type}")
+        
+        if pdf_type == PDFType.UNKNOWN:
+            return ProcessingResult(
+                document_id=document_id,
+                status=ProcessingStatus.FAILED,
+                chunks_count=0,
+                total_chars=0,
+                error_message="Unknown PDF type - cannot process"
+            )
+        
+        # 3. Extract text (auto-detect: PyPDF2 for digital, Textract for scanned)
+        logger.info("Extracting text from PDF...")
+        pdf_content = extract_pdf_auto(
+            pdf_bytes, 
+            use_textract_for_scanned=True,
+            textract_region=self.region
+        )
+        logger.info(f"Extraction method: {pdf_content.extraction_method}")
+        
+        if not pdf_content.full_text:
+            return ProcessingResult(
+                document_id=document_id,
+                status=ProcessingStatus.FAILED,
+                chunks_count=0,
+                total_chars=0,
+                error_message="No text extracted from PDF"
+            )
+        
+        # 4. Chunk text with table handling
+        logger.info("Chunking text with table detection...")
+        
+        # Collect tables from all pages
+        all_tables = []
+        table_names = []
+        for page in pdf_content.pages:
+            if page.tables:
+                for i, table in enumerate(page.tables):
+                    all_tables.append(table)
+                    table_names.append(f"Table (Page {page.page_number}, #{i+1})")
+        
+        if all_tables:
+            logger.info(f"Found {len(all_tables)} tables, using row-based chunking with header injection")
+            chunks = chunk_text_with_tables(
+                text=pdf_content.full_text,
+                tables=all_tables,
+                table_names=table_names,
+                rows_per_chunk=5  # 5 rows per table chunk
+            )
+        else:
+            # No tables from extractor, try to detect in text
+            chunks = chunk_text_with_tables(
+                text=pdf_content.full_text,
+                tables=None,  # Will auto-detect
+                rows_per_chunk=5
+            )
+        
+        # Count table vs text chunks
+        table_chunks = [c for c in chunks if c.is_table]
+        text_chunks = [c for c in chunks if not c.is_table]
+        logger.info(f"Created {len(chunks)} chunks ({len(table_chunks)} table, {len(text_chunks)} text)")
+        
+        # 5. Generate embeddings (if callback provided)
+        vectors = []
+        if self.embeddings_callback and chunks:
+            logger.info("Generating embeddings...")
+            for chunk in chunks:
+                try:
+                    vector = self.embeddings_callback(chunk.text)
+                    vectors.append(vector)
+                except Exception as e:
+                    logger.error(f"Error generating embedding: {e}")
+                    vectors.append(None)
+        
+        # 6. Store vectors (if callback provided)
+        if self.store_vectors_callback and vectors:
+            logger.info("Storing vectors...")
+            
+            # Build chunk data with page info
+            chunk_data = []
+            for i, chunk in enumerate(chunks):
+                # Estimate page from character position
+                # Assume ~3000 chars per page for digital PDFs
+                estimated_page = (chunk.start_char // 3000) + 1 if chunk.start_char > 0 else 1
+                estimated_page = min(estimated_page, pdf_content.total_pages)
+                
+                chunk_data.append({
+                    "text": chunk.text,
+                    "page": estimated_page,
+                    "is_table": chunk.is_table,
+                    "chunk_index": i
+                })
+            
+            metadata = {
+                "document_id": document_id,
+                "bucket": bucket,
+                "key": key,
+                "file_type": ".pdf",
+                "total_pages": pdf_content.total_pages,
+                "pdf_metadata": pdf_content.metadata,
+                "chunk_data": chunk_data  # Include page info
+            }
+            self.store_vectors_callback(document_id, chunk_data, vectors, metadata)
+        
+        return ProcessingResult(
+            document_id=document_id,
+            status=ProcessingStatus.COMPLETED,
+            chunks_count=len(chunks),
+            total_chars=pdf_content.total_chars,
+            metadata={
+                "file_type": ".pdf",
+                "total_pages": pdf_content.total_pages,
+                "vectors_generated": len([v for v in vectors if v])
+            }
+        )
+    
     def _download_from_s3(self, bucket: str, key: str) -> Optional[bytes]:
         """Download file from S3."""
         try:
@@ -450,6 +609,17 @@ class SQSWorker:
         except ClientError as e:
             logger.error(f"Error downloading from S3: {e}")
             return None
+    
+    def _download_from_s3_with_metadata(self, bucket: str, key: str) -> tuple[Optional[bytes], dict]:
+        """Download file from S3 with metadata."""
+        try:
+            response = self.s3.get_object(Bucket=bucket, Key=key)
+            content = response['Body'].read()
+            metadata = response.get('Metadata', {})
+            return content, metadata
+        except ClientError as e:
+            logger.error(f"Error downloading from S3: {e}")
+            return None, {}
     
     def _delete_message(self, receipt_handle: str):
         """Delete message from SQS queue."""

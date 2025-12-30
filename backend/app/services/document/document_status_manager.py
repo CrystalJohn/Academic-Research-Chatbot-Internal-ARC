@@ -81,7 +81,9 @@ class DocumentStatusManager:
         self,
         doc_id: str,
         filename: str,
-        uploaded_by: str
+        uploaded_by: str,
+        file_type: str = ".pdf",
+        processor: str = "textract"
     ) -> dict:
         """
         Create a new document record with UPLOADED status.
@@ -90,6 +92,8 @@ class DocumentStatusManager:
             doc_id: Unique document identifier (UUID)
             filename: Original filename
             uploaded_by: User ID who uploaded the document
+            file_type: File extension (e.g., '.pdf', '.md', '.ipynb')
+            processor: Processing method ('textract', 'markdown', 'jupyter')
             
         Returns:
             dict: Created document record
@@ -108,6 +112,8 @@ class DocumentStatusManager:
             "filename": {"S": filename},
             "uploaded_by": {"S": uploaded_by},
             "uploaded_at": {"S": timestamp},
+            "file_type": {"S": file_type},
+            "processor": {"S": processor},
         }
         
         self._client.put_item(
@@ -122,6 +128,8 @@ class DocumentStatusManager:
             "filename": filename,
             "uploaded_by": uploaded_by,
             "uploaded_at": timestamp,
+            "file_type": file_type,
+            "processor": processor,
         }
 
     def update_status(

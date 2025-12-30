@@ -1,0 +1,19 @@
+{
+  "questions": [
+    "OOP là gì?",
+    "Giải thích các nguyên tắc SOLID trong lập trình",
+    "Design pattern là gì và có những loại nào?",
+    "Sự khác nhau giữa abstract class và interface?",
+    "What is machine learning?",
+    "Explain the difference between SQL and NoSQL databases"
+  ],
+  "ground_truths": [
+    "OOP (Object-Oriented Programming) là phương pháp lập trình dựa trên khái niệm đối tượng, bao gồm 4 tính chất: đóng gói, kế thừa, đa hình, trừu tượng.",
+    "SOLID gồm 5 nguyên tắc: Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, Dependency Inversion.",
+    "Design pattern là các giải pháp tái sử dụng cho các vấn đề phổ biến trong thiết kế phần mềm. Có 3 loại chính: Creational, Structural, Behavioral.",
+    "Abstract class có thể có implementation, interface chỉ định nghĩa contract. Class chỉ kế thừa 1 abstract class nhưng implement nhiều interface.",
+    "Machine learning is a subset of AI that enables systems to learn from data and improve without explicit programming.",
+    "SQL databases are relational with structured schemas, NoSQL are non-relational with flexible schemas for unstructured data."
+  ],
+  "created_at": "2025-12-20T00:00:00"
+}

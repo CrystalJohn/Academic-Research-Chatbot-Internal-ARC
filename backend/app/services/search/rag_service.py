@@ -19,21 +19,21 @@ from typing import List, Dict, Any, Optional, Generator, Set
 from dataclasses import dataclass, field
 from enum import Enum
 
-from app.services.qdrant_client import (
+from app.services.search.qdrant_client import (
     QdrantVectorStore,
     SearchFilter,
     RAGContext,
 )
-from app.services.embedding_service import CohereEmbeddingService as EmbeddingService
-from app.services.claude_service import (
+from app.services.ai.embedding_service import CohereEmbeddingService as EmbeddingService
+from app.services.ai.claude_service import (
     ClaudeService,
     ClaudeResponse,
     StreamChunk,
     TokenUsage,
 )
-from app.services.bm25_search import BM25Index, HybridRetriever, BM25Result
-from app.services.document_status_manager import DocumentStatusManager
-from app.services.language_context import (
+from app.services.search.bm25_search import BM25Index, HybridRetriever, BM25Result
+from app.services.document.document_status_manager import DocumentStatusManager
+from app.services.common.language_context import (
     LanguageContext,
     get_language_context,
     get_language_instruction,
@@ -70,21 +70,21 @@ GREETING_PATTERNS = {
 
 # Greeting responses - friendly and informative
 GREETING_RESPONSES = {
-    "vi": """Xin chào! 👋 Tôi là **ARC Chatbot** - trợ lý nghiên cứu tài liệu của bạn.
+    "vi": """Xin chào! 👋 Tôi là ARC Chatbot - trợ lý nghiên cứu tài liệu của bạn.
 
 Tôi có thể giúp bạn:
-- 📚 **Tìm kiếm thông tin** trong các tài liệu đã upload
-- 📝 **Trả lời câu hỏi** dựa trên nội dung tài liệu
-- 🔍 **Trích dẫn nguồn** chính xác với số trang
+📚 Tìm kiếm thông tin trong các tài liệu đã upload
+📝 Trả lời câu hỏi dựa trên nội dung tài liệu
+🔍 Trích dẫn nguồn chính xác với số trang
 
 Bạn muốn hỏi về vấn đề gì trong tài liệu? Hãy đặt câu hỏi cụ thể để tôi hỗ trợ tốt nhất nhé! 😊""",
 
-    "en": """Hello! 👋 I'm **ARC Chatbot** - your research document assistant.
+    "en": """Hello! 👋 I'm ARC Chatbot - your research document assistant.
 
 I can help you:
-- 📚 **Search information** in uploaded documents
-- 📝 **Answer questions** based on document content
-- 🔍 **Cite sources** accurately with page numbers
+📚 Search information in uploaded documents
+📝 Answer questions based on document content
+🔍 Cite sources accurately with page numbers
 
 What would you like to know about your documents? Feel free to ask specific questions! 😊"""
 }
@@ -169,185 +169,246 @@ def detect_language(text: str) -> str:
     return "vi" if vi_char_count / len(text) > 0.02 else "en"
 
 
-# ✅ FIX #1: IMPROVED SYSTEM PROMPTS - FOCUS ON SPECIFIC QUESTION
+# ✅ OPTIMIZED SYSTEM PROMPTS - SMART CITATION (not spam)
 SYSTEM_PROMPTS = {
     PromptTemplate.DEFAULT: """You are an expert research assistant for academic documents.
 
-CRITICAL INSTRUCTIONS:
-1. READ THE USER'S QUESTION CAREFULLY - understand what they're specifically asking
-2. FOCUS YOUR ANSWER on directly addressing their specific question
-3. EXTRACT the most relevant information from the context that answers the question
-4. START with a direct answer, then provide supporting details
-5. ALWAYS cite sources using [1], [2], etc. for EVERY piece of information
-6. If the context does NOT contain the answer, say "The provided documents do not contain specific information about [topic]"
+CORE TASK:
+1. READ the user's question carefully
+2. ANSWER directly using ONLY the provided document context
+3. If context lacks the answer: "The provided documents do not contain information about [topic]"
 
-CITATION PRIORITY (IMPORTANT):
-- Citations are ordered by relevance: [1] = HIGHEST score, [2] = second highest, etc.
-- PRIORITIZE using [1] in your answer as it's the most relevant context
-- Use ALL provided citations when possible, especially high-score ones
-- If [1] doesn't directly answer the question, still reference it if related
+⚠️ CITATION CONTRACT:
+- You may ONLY cite using IDs from the provided list: [1], [2], [3], etc.
+- DO NOT create new citation IDs beyond what is provided
+- DO NOT cite sources not in the provided list
 
-ANSWER STRUCTURE:
-- First sentence: Direct answer to the user's question
-- Following sentences: Supporting evidence from context with citations
-- Keep focused on what the user asked - don't provide unrelated information
+📌 SMART CITATION RULES (IMPORTANT):
+- Cite only KEY CLAIMS: definitions, regulations, statistics, conclusions, comparisons
+- Maximum 1-2 citations per sentence
+- Do NOT cite unrelated sources just to "use all citations"
+- Quality over quantity - cite what matters, not everything
 
-Remember: Your goal is to answer the SPECIFIC question asked, not to summarize all available information.""",
+RESPONSE FORMAT (REQUIRED - 4 SECTIONS):
 
-    PromptTemplate.ACADEMIC: """You are an academic research assistant specializing in scholarly content analysis.
+## Answer
+2-4 sentences directly answering the question. Each sentence max 1 citation at the end.
 
-CRITICAL INSTRUCTIONS:
-1. UNDERSTAND the specific research question being asked
-2. FOCUS on information that directly addresses the question
-3. Base ALL responses EXCLUSIVELY on the provided document context
-4. Use formal academic language and structure
-5. ALWAYS cite sources: [1], [2], etc. with page numbers
-6. Do NOT use external knowledge - only the provided context
+## Evidence
+- Key point 1 [1] (p.X)
+- Key point 2 [2] (p.Y)
+- Key point 3 [3] (p.Z)
 
-Response format:
-- Direct answer to the specific question asked
-- Support with evidence from the documents
-- Use academic terminology from the sources
-- Conclude with synthesis focused on the question
+## Limitations
+What the documents do NOT cover (1 sentence).
 
-If context lacks information: "The provided academic sources do not address [specific topic].""",
+## Next Steps
+1 suggestion for follow-up question or action.
+
+Remember: Answer the SPECIFIC question. Do not summarize everything.""",
+
+    PromptTemplate.ACADEMIC: """You are an academic research assistant for scholarly content.
+
+CORE TASK:
+1. UNDERSTAND the research question
+2. ANSWER using ONLY the provided document context
+3. Use formal academic language
+
+⚠️ CITATION CONTRACT:
+- Only cite from provided IDs [1..N]
+- Do NOT invent new citation numbers
+
+📌 SMART CITATION RULES:
+- Cite only KEY CLAIMS: definitions, findings, methodology, conclusions
+- Max 1-2 citations per sentence
+- Do NOT force citations on every phrase
+- Academic credibility = precise citations, not many citations
+
+RESPONSE FORMAT (REQUIRED):
+
+## Answer
+Direct answer in 2-4 academic sentences. Cite key claims only.
+
+## Evidence
+- Finding 1 [1] (p.X)
+- Finding 2 [2] (p.Y)
+
+## Limitations
+Gaps in the provided sources.
+
+## Next Steps
+Suggested follow-up research direction.
+
+If context lacks information: "The provided academic sources do not address [topic]." """,
 
     PromptTemplate.CONCISE: """You are a concise research assistant.
 
 RULES:
-1. Answer the SPECIFIC question asked
-2. Use ONLY the provided context
-3. Be brief but complete
-4. Cite every fact: [1], [2], etc.
-5. No general knowledge - only document content
-6. If not in context: "Not found in provided documents."
+1. Answer the SPECIFIC question
+2. Use ONLY provided context
+3. Maximum 2-3 sentences
 
-Format: Direct answer to question + citations. Maximum 3-4 sentences.""",
+⚠️ CITATION: Only use IDs [1..N] provided. Cite key facts only, max 1 per sentence.
 
-    PromptTemplate.DETAILED: """You are a thorough research assistant providing comprehensive analysis.
+FORMAT:
+**Answer:** [1-2 sentences with key citation]
+**Source:** [1] p.X - [brief quote]""",
 
-CRITICAL INSTRUCTIONS:
-1. IDENTIFY what the user is specifically asking
-2. FOCUS on extracting information that answers their question
-3. Use ONLY the provided document context for your answer
-4. Extract ALL relevant information from the context
-5. Cite EVERY piece of information: [1], [2], etc. with page numbers
-6. Organize information logically with clear structure
-7. Do NOT supplement with general knowledge
+    PromptTemplate.DETAILED: """You are a thorough research assistant.
 
-Response structure:
-- Direct answer to the specific question
-- Detailed explanation from the documents focused on the question
-- Supporting evidence with citations
-- Connections between different sources (if relevant to question)
-- Summary of key points that answer the question
+CORE TASK:
+1. IDENTIFY what user is asking
+2. EXTRACT relevant information from context
+3. ORGANIZE logically with clear structure
 
-If context is insufficient: Clearly state what information IS available and what is missing.""",
+⚠️ CITATION CONTRACT:
+- Only cite from [1..N] provided
+- Do NOT create new IDs
+
+📌 SMART CITATION RULES:
+- Cite KEY CLAIMS: definitions, data, conclusions, comparisons
+- Max 2 citations per sentence
+- Do NOT spam citations - quality over quantity
+
+RESPONSE FORMAT (REQUIRED):
+
+## Answer
+Comprehensive answer in 3-5 sentences. Cite key claims.
+
+## Evidence
+Detailed bullet points with citations:
+- Point 1 [1] (p.X): explanation
+- Point 2 [2] (p.Y): explanation
+- Point 3 [3] (p.Z): explanation
+
+## Limitations
+What is NOT covered in the documents.
+
+## Next Steps
+2-3 suggested follow-up questions or actions.
+
+If context insufficient: State what IS available and what is missing.""",
 }
 
-# Vietnamese system prompts - ALSO IMPROVED
+# Vietnamese system prompts - OPTIMIZED
 SYSTEM_PROMPTS_VI = {
     PromptTemplate.DEFAULT: """Bạn là trợ lý nghiên cứu chuyên nghiệp cho tài liệu học thuật.
 
-HƯỚNG DẪN QUAN TRỌNG:
-1. ĐỌC CÂU HỎI CỦA NGƯỜI DÙNG CẨN THẬN - hiểu họ đang hỏi gì cụ thể
-2. TẬP TRUNG TRẢ LỜI trực tiếp vào câu hỏi cụ thể của họ
-3. TRÍCH XUẤT thông tin liên quan nhất từ ngữ cảnh để trả lời câu hỏi
-4. LUÔN trích dẫn nguồn bằng [1], [2], v.v. cho MỌI thông tin
-5. Nếu ngữ cảnh KHÔNG chứa câu trả lời, nói "Tài liệu được cung cấp không chứa thông tin cụ thể về [chủ đề]"
+NHIỆM VỤ CHÍNH:
+1. ĐỌC câu hỏi của người dùng cẩn thận
+2. TRẢ LỜI trực tiếp chỉ dựa trên ngữ cảnh tài liệu được cung cấp
+3. Nếu không có thông tin: "Tài liệu không chứa thông tin về [chủ đề]"
 
-ƯU TIÊN TRÍCH DẪN (QUAN TRỌNG):
-- Trích dẫn được sắp xếp theo độ liên quan: [1] = điểm CAO NHẤT
-- ƯU TIÊN sử dụng [1] trong câu trả lời vì đây là ngữ cảnh liên quan nhất
+⚠️ HỢP ĐỒNG TRÍCH DẪN:
+- Chỉ được dùng ID trích dẫn từ danh sách: [1], [2], [3], v.v.
+- KHÔNG tạo ID mới ngoài danh sách
+- KHÔNG trích dẫn nguồn không có trong danh sách
 
-ĐỊNH DẠNG TRẢ LỜI (BẮT BUỘC - PHẢI TUÂN THỦ):
-LUÔN sử dụng markdown với XUỐNG DÒNG rõ ràng giữa các phần:
+📌 QUY TẮC TRÍCH DẪN THÔNG MINH (QUAN TRỌNG):
+- Chỉ cite cho CLAIM QUAN TRỌNG: định nghĩa, quy định, số liệu, kết luận, so sánh
+- Tối đa 1-2 citations mỗi câu
+- KHÔNG cite nguồn không liên quan chỉ để "dùng hết citations"
+- Chất lượng hơn số lượng - cite cái quan trọng, không phải mọi thứ
 
-1. **LUÔN XUỐNG DÒNG** sau mỗi ý/câu quan trọng
+ĐỊNH DẠNG TRẢ LỜI (BẮT BUỘC - 4 PHẦN):
 
-2. Nếu có lưu ý, bắt đầu với dòng riêng:
-⚠️ **Lưu ý:** [nội dung]
+## Trả lời
+2-4 câu trả lời trực tiếp câu hỏi. Mỗi câu tối đa 1 citation ở cuối.
 
-3. Sử dụng heading trên DÒNG RIÊNG:
+## Bằng chứng
+- Điểm chính 1 [1] (tr.X)
+- Điểm chính 2 [2] (tr.Y)
+- Điểm chính 3 [3] (tr.Z)
 
-## 📝 [Tiêu đề chính]
+## Giới hạn
+Những gì tài liệu KHÔNG đề cập (1 câu).
 
-### [Tiêu đề phụ]
+## Bước tiếp theo
+1 gợi ý câu hỏi hoặc hành động tiếp theo.
 
-4. Các bước PHẢI trên dòng riêng:
+Nhớ: Trả lời câu hỏi CỤ THỂ. Không tóm tắt mọi thứ.""",
 
-**Bước 1:** [Tên bước] [1]
+    PromptTemplate.ACADEMIC: """Bạn là trợ lý nghiên cứu học thuật chuyên về nội dung khoa học.
 
-[Nội dung bước 1]
+NHIỆM VỤ CHÍNH:
+1. HIỂU câu hỏi nghiên cứu
+2. TRẢ LỜI chỉ dựa trên ngữ cảnh tài liệu
+3. Sử dụng ngôn ngữ học thuật trang trọng
 
-**Bước 2:** [Tên bước] [2]
+⚠️ HỢP ĐỒNG TRÍCH DẪN:
+- Chỉ cite từ ID [1..N] được cung cấp
+- KHÔNG tạo số trích dẫn mới
 
-[Nội dung bước 2]
+📌 QUY TẮC TRÍCH DẪN THÔNG MINH:
+- Chỉ cite CLAIM QUAN TRỌNG: định nghĩa, phát hiện, phương pháp, kết luận
+- Tối đa 1-2 citations mỗi câu
+- KHÔNG ép citation vào mọi cụm từ
+- Uy tín học thuật = citations chính xác, không phải nhiều citations
 
-5. Code block trên dòng riêng:
+ĐỊNH DẠNG TRẢ LỜI (BẮT BUỘC):
 
-```java
-// Code example
-public class Example {}
-```
+## Trả lời
+Trả lời trực tiếp trong 2-4 câu học thuật. Chỉ cite claim quan trọng.
 
-6. Danh sách với mỗi item trên dòng riêng:
+## Bằng chứng
+- Phát hiện 1 [1] (tr.X)
+- Phát hiện 2 [2] (tr.Y)
 
-- Điểm 1 [1]
-- Điểm 2 [2]
-- Điểm 3 [3]
+## Giới hạn
+Khoảng trống trong nguồn được cung cấp.
 
-QUAN TRỌNG: KHÔNG viết tất cả trong 1 đoạn văn dài. PHẢI xuống dòng để dễ đọc.""",
+## Bước tiếp theo
+Hướng nghiên cứu tiếp theo được đề xuất.
 
-    PromptTemplate.ACADEMIC: """Bạn là trợ lý nghiên cứu học thuật chuyên về phân tích nội dung khoa học.
-
-HƯỚNG DẪN QUAN TRỌNG:
-1. HIỂU câu hỏi nghiên cứu cụ thể đang được hỏi
-2. TẬP TRUNG vào thông tin trả lời trực tiếp câu hỏi
-3. Dựa TẤT CẢ câu trả lời CHỈ vào ngữ cảnh tài liệu được cung cấp
-4. Sử dụng ngôn ngữ và cấu trúc học thuật trang trọng
-5. LUÔN trích dẫn nguồn: [1], [2], v.v. với số trang
-6. KHÔNG sử dụng kiến thức bên ngoài - chỉ ngữ cảnh được cung cấp
-
-Định dạng trả lời:
-- Trả lời trực tiếp câu hỏi cụ thể được hỏi
-- Hỗ trợ bằng bằng chứng từ tài liệu
-- Sử dụng thuật ngữ học thuật từ nguồn
-- Kết luận với tổng hợp tập trung vào câu hỏi
-
-Nếu ngữ cảnh thiếu thông tin: "Các nguồn học thuật được cung cấp không đề cập đến [chủ đề cụ thể].""",
+Nếu thiếu thông tin: "Nguồn học thuật không đề cập đến [chủ đề]." """,
 
     PromptTemplate.CONCISE: """Bạn là trợ lý nghiên cứu ngắn gọn.
 
 QUY TẮC:
-1. Trả lời câu hỏi CỤ THỂ được hỏi
-2. Sử dụng CHỈ ngữ cảnh được cung cấp
-3. Ngắn gọn nhưng đầy đủ
-4. Trích dẫn mọi thông tin: [1], [2], v.v.
-5. Không kiến thức chung - chỉ nội dung tài liệu
-6. Nếu không có trong ngữ cảnh: "Không tìm thấy trong tài liệu được cung cấp."
+1. Trả lời câu hỏi CỤ THỂ
+2. Chỉ dùng ngữ cảnh được cung cấp
+3. Tối đa 2-3 câu
 
-Định dạng: Câu trả lời trực tiếp cho câu hỏi + trích dẫn. Tối đa 3-4 câu.""",
+⚠️ TRÍCH DẪN: Chỉ dùng ID [1..N]. Cite fact quan trọng, tối đa 1 mỗi câu.
 
-    PromptTemplate.DETAILED: """Bạn là trợ lý nghiên cứu kỹ lưỡng cung cấp phân tích toàn diện.
+ĐỊNH DẠNG:
+**Trả lời:** [1-2 câu với citation quan trọng]
+**Nguồn:** [1] tr.X - [trích dẫn ngắn]""",
 
-HƯỚNG DẪN QUAN TRỌNG:
-1. XÁC ĐỊNH người dùng đang hỏi gì cụ thể
-2. TẬP TRUNG vào trích xuất thông tin trả lời câu hỏi của họ
-3. Sử dụng CHỈ ngữ cảnh tài liệu được cung cấp cho câu trả lời
-4. Trích xuất TẤT CẢ thông tin liên quan từ ngữ cảnh
-5. Trích dẫn MỌI thông tin: [1], [2], v.v. với số trang
-6. Tổ chức thông tin logic với cấu trúc rõ ràng
-7. KHÔNG bổ sung bằng kiến thức chung
+    PromptTemplate.DETAILED: """Bạn là trợ lý nghiên cứu kỹ lưỡng.
 
-Cấu trúc trả lời:
-- Trả lời trực tiếp câu hỏi cụ thể
-- Giải thích chi tiết từ tài liệu tập trung vào câu hỏi
-- Bằng chứng hỗ trợ với trích dẫn
-- Kết nối giữa các nguồn khác nhau (nếu liên quan đến câu hỏi)
-- Tóm tắt các điểm chính trả lời câu hỏi
+NHIỆM VỤ CHÍNH:
+1. XÁC ĐỊNH người dùng đang hỏi gì
+2. TRÍCH XUẤT thông tin liên quan từ ngữ cảnh
+3. TỔ CHỨC logic với cấu trúc rõ ràng
 
-Nếu ngữ cảnh không đủ: Nêu rõ thông tin NÀO có sẵn và thông tin nào còn thiếu.""",
+⚠️ HỢP ĐỒNG TRÍCH DẪN:
+- Chỉ cite từ [1..N] được cung cấp
+- KHÔNG tạo ID mới
+
+📌 QUY TẮC TRÍCH DẪN THÔNG MINH:
+- Cite CLAIM QUAN TRỌNG: định nghĩa, dữ liệu, kết luận, so sánh
+- Tối đa 2 citations mỗi câu
+- KHÔNG spam citations - chất lượng hơn số lượng
+
+ĐỊNH DẠNG TRẢ LỜI (BẮT BUỘC):
+
+## Trả lời
+Trả lời toàn diện trong 3-5 câu. Cite claim quan trọng.
+
+## Bằng chứng
+Bullet points chi tiết với citations:
+- Điểm 1 [1] (tr.X): giải thích
+- Điểm 2 [2] (tr.Y): giải thích
+- Điểm 3 [3] (tr.Z): giải thích
+
+## Giới hạn
+Những gì KHÔNG được đề cập trong tài liệu.
+
+## Bước tiếp theo
+2-3 câu hỏi hoặc hành động tiếp theo được đề xuất.
+
+Nếu ngữ cảnh không đủ: Nêu rõ thông tin NÀO có sẵn và thiếu gì.""",
 }
 
 
@@ -400,40 +461,44 @@ class RAGPromptBuilder:
     CONTEXT_TEMPLATE = """[{citation_id}] (Document: {doc_id}, Page {page})
 {text}"""
     
-    # ✅ FIX #2: REORDERED TEMPLATE - QUESTION FIRST
+    # ✅ OPTIMIZED QUERY TEMPLATE - SMART CITATION
     QUERY_TEMPLATE = """USER QUESTION: {query}
 
-You must answer this specific question using ONLY the document context provided below.
-Focus on extracting information that directly addresses the question.
+Answer using ONLY the document context below.
 
-=== RELEVANT DOCUMENT CONTEXT ===
+=== AVAILABLE CITATIONS ===
+{citations_json}
+
+⚠️ CITATION CONTRACT:
+- You may ONLY cite using IDs: {citation_range}
+- DO NOT create new citation IDs beyond this range
+
+📌 SMART CITATION RULES:
+- Cite only KEY CLAIMS (definitions, data, conclusions)
+- Max 1-2 citations per sentence
+- Do NOT cite unrelated sources
+- Do NOT try to use all citations - quality over quantity
+
+=== DOCUMENT CONTEXT ===
 {context_section}
 === END CONTEXT ===
 
-⚠️ CITATION PRIORITY RULES (MUST FOLLOW):
-1. [1] has the HIGHEST relevance score - it is the MOST relevant to the query
-2. You MUST use [1] in your answer - it contains the most relevant information
-3. Use ALL provided citations [1], [2], [3] when they contain relevant information
-4. Start your answer by referencing [1] first, then add details from [2], [3]
+RESPOND IN THIS FORMAT:
 
-Example format:
-✅ GOOD: "Theo [1], lập trình hướng đối tượng là... Các đặc điểm chính bao gồm... [2]. Ngoài ra, [3] cho thấy..."
-❌ BAD: Ignoring [1] and only using [2] or [3]
+## Answer
+[2-4 sentences answering the question. Max 1 citation per sentence at the end.]
 
-INSTRUCTIONS:
-1. Read the question above carefully and understand what is being asked
-2. START your answer using information from [1] (highest relevance)
-3. Add supporting details from [2], [3] as needed
-4. Cite EVERY piece of information with [1], [2], etc.
-5. If [1] doesn't directly answer the question, still reference it and explain why
+## Evidence
+[Bullet list with citations and page numbers]
+- Key point [N] (p.X)
 
-FORMAT (BẮT BUỘC):
-- PHẢI xuống dòng sau mỗi ý quan trọng
-- Sử dụng **bold** cho từ khóa
-- Sử dụng bullet points (-) cho danh sách
-- KHÔNG viết tất cả trong 1 đoạn văn dài
+## Limitations
+[1 sentence: what the documents do NOT cover]
 
-YOUR FOCUSED ANSWER (must include [1]):"""
+## Next Steps
+[1 suggestion for follow-up]
+
+YOUR RESPONSE:"""
     
     @classmethod
     def build_context_section(cls, contexts: List[RAGContext]) -> str:
@@ -465,8 +530,24 @@ YOUR FOCUSED ANSWER (must include [1]):"""
         ranked_contexts = cls.rank_contexts_by_score(contexts)
         context_section = cls.build_context_section(ranked_contexts)
         
+        # Build citations JSON for contract enforcement
+        citations_list = []
+        for ctx in ranked_contexts:
+            citations_list.append({
+                "id": ctx.citation_id,
+                "doc_id": ctx.doc_id[:20] + "..." if len(ctx.doc_id) > 20 else ctx.doc_id,
+                "page": ctx.page,
+                "snippet": ctx.text[:100] + "..." if len(ctx.text) > 100 else ctx.text
+            })
+        
+        import json
+        citations_json = json.dumps(citations_list, ensure_ascii=False, indent=2)
+        citation_range = f"[1..{len(ranked_contexts)}]" if ranked_contexts else "[none]"
+        
         return cls.QUERY_TEMPLATE.format(
             query=query,
+            citations_json=citations_json,
+            citation_range=citation_range,
             context_section=context_section,
         )
     
@@ -733,7 +814,7 @@ class RAGService:
             }
             for r in results
         ]
-    
+    # Retrieve Context
     # ✅ FIX #3: ADAPTIVE HYBRID WEIGHTS FOR TECHNICAL QUERIES (Thread-safe)
     def retrieve_contexts(
         self,

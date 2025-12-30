@@ -42,6 +42,11 @@ class SearchResult:
     page: int
     text: str
     is_table: bool
+    # New metadata fields
+    filename: str = ""
+    file_type: str = ""
+    title: str = ""
+    section_title: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API response."""
@@ -53,6 +58,10 @@ class SearchResult:
             "page": self.page,
             "text": self.text,
             "is_table": self.is_table,
+            "filename": self.filename,
+            "file_type": self.file_type,
+            "title": self.title,
+            "section_title": self.section_title,
         }
 
 
@@ -66,6 +75,11 @@ class RAGContext:
     score: float
     citation_id: int = 0  # [1], [2], etc.
     is_table: bool = False
+    # New metadata fields
+    filename: str = ""
+    file_type: str = ""
+    title: str = ""
+    section_title: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -77,6 +91,10 @@ class RAGContext:
             "score": self.score,
             "citation_id": self.citation_id,
             "is_table": self.is_table,
+            "filename": self.filename,
+            "file_type": self.file_type,
+            "title": self.title,
+            "section_title": self.section_title,
         }
 
 
@@ -88,6 +106,7 @@ class SearchFilter:
     page_max: Optional[int] = None  # Maximum page number
     is_table: Optional[bool] = None  # Filter tables only or text only
     exclude_doc_ids: Optional[List[str]] = None  # Exclude specific docs
+    file_types: Optional[List[str]] = None  # Filter by file type (.pdf, .md, .ipynb)
 
 
 class QdrantVectorStore:
@@ -211,6 +230,20 @@ class QdrantVectorStore:
                 field_schema=PayloadSchemaType.BOOL,
             )
             
+            # Index for file_type (keyword for filtering by .pdf, .md, .ipynb)
+            self.client.create_payload_index(
+                collection_name=self.COLLECTION_NAME,
+                field_name="file_type",
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+            
+            # Index for filename (keyword for exact match)
+            self.client.create_payload_index(
+                collection_name=self.COLLECTION_NAME,
+                field_name="filename",
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+            
             logger.info("Created payload indexes")
             
         except Exception as e:
@@ -223,6 +256,11 @@ class QdrantVectorStore:
         vectors: List[List[float]],
         pages: Optional[List[int]] = None,
         is_tables: Optional[List[bool]] = None,
+        # New metadata fields
+        filename: Optional[str] = None,
+        file_type: Optional[str] = None,
+        title: Optional[str] = None,
+        section_titles: Optional[List[str]] = None,
     ) -> int:
         """
         Upsert document vectors to Qdrant.
@@ -233,6 +271,10 @@ class QdrantVectorStore:
             vectors: List of embedding vectors (1024-dim each)
             pages: Optional list of page numbers
             is_tables: Optional list of is_table flags
+            filename: Original filename (stored in all chunks for filtering)
+            file_type: File extension (.pdf, .md, .ipynb)
+            title: Document title
+            section_titles: Optional list of section titles per chunk
             
         Returns:
             Number of vectors upserted
@@ -255,6 +297,8 @@ class QdrantVectorStore:
             pages = [1] * len(texts)
         if is_tables is None:
             is_tables = [False] * len(texts)
+        if section_titles is None:
+            section_titles = [""] * len(texts)
         
         # Create points
         points = []
@@ -262,17 +306,31 @@ class QdrantVectorStore:
             zip(texts, vectors, pages, is_tables)
         ):
             point_id = str(uuid.uuid4())
+            
+            # Build payload with all metadata
+            payload = {
+                "doc_id": doc_id,
+                "chunk_index": i,
+                "page": page,
+                "text": text,
+                "is_table": is_table,
+            }
+            
+            # Add optional metadata if provided
+            if filename:
+                payload["filename"] = filename
+            if file_type:
+                payload["file_type"] = file_type
+            if title:
+                payload["title"] = title
+            if section_titles and i < len(section_titles) and section_titles[i]:
+                payload["section_title"] = section_titles[i]
+            
             points.append(
                 PointStruct(
                     id=point_id,
                     vector=vector,
-                    payload={
-                        "doc_id": doc_id,
-                        "chunk_index": i,
-                        "page": page,
-                        "text": text,
-                        "is_table": is_table,
-                    },
+                    payload=payload,
                 )
             )
         
@@ -372,6 +430,23 @@ class QdrantVectorStore:
                 )
             )
         
+        # File type filter
+        if search_filter.file_types:
+            if len(search_filter.file_types) == 1:
+                must_conditions.append(
+                    FieldCondition(
+                        key="file_type",
+                        match=MatchValue(value=search_filter.file_types[0]),
+                    )
+                )
+            else:
+                must_conditions.append(
+                    FieldCondition(
+                        key="file_type",
+                        match=MatchAny(any=search_filter.file_types),
+                    )
+                )
+        
         if not must_conditions and not must_not_conditions:
             return None
         
@@ -446,6 +521,10 @@ class QdrantVectorStore:
                     page=payload.get("page", 1),
                     text=payload.get("text", ""),
                     is_table=payload.get("is_table", False),
+                    filename=payload.get("filename", ""),
+                    file_type=payload.get("file_type", ""),
+                    title=payload.get("title", ""),
+                    section_title=payload.get("section_title", ""),
                 )
             )
         
@@ -503,6 +582,10 @@ class QdrantVectorStore:
                     score=result.score * 100,  # Convert to percentage for display
                     citation_id=i + 1,  # 1-indexed for [1], [2], etc.
                     is_table=result.is_table,
+                    filename=result.filename,
+                    file_type=result.file_type,
+                    title=result.title,
+                    section_title=result.section_title,
                 )
             )
         

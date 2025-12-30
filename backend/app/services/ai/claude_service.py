@@ -19,7 +19,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError, BotoCoreError
 
-from app.services.bedrock_retry import (
+from .bedrock_retry import (
     RetryConfig,
     RetryableBedrockClient,
     BedrockError,

@@ -467,6 +467,32 @@ class RetryableBedrockClient:
             return self.client.invoke_model_with_response_stream(**kwargs)
         
         return _invoke()
+    
+    def converse(self, **kwargs) -> dict:
+        """
+        Call Converse API with retry logic.
+        
+        Args:
+            **kwargs: Arguments to pass to converse
+            
+        Returns:
+            Response from converse API
+            
+        Raises:
+            BedrockError: On non-retryable or exhausted retries
+        """
+        @with_retry(
+            max_retries=self.config.max_retries,
+            base_delay=self.config.base_delay,
+            max_delay=self.config.max_delay,
+            exponential_base=self.config.exponential_base,
+            jitter=self.config.jitter,
+            on_retry=self.on_retry,
+        )
+        def _invoke():
+            return self.client.converse(**kwargs)
+        
+        return _invoke()
 
 
 # Convenience function for creating retry decorator with logging

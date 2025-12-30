@@ -2,8 +2,13 @@
 Admin API endpoints for document management.
 
 Endpoints:
-- POST /api/admin/upload - Upload PDF document (WITH ROLLBACK) - ADMIN ONLY
+- POST /api/admin/upload - Upload document (PDF, MD, IPYNB) WITH ROLLBACK - ADMIN ONLY
 - GET /api/admin/documents - List documents with pagination - ADMIN ONLY
+
+Supported file types:
+- .pdf - PDF documents (processed via Textract)
+- .md - Markdown files (direct text parsing)
+- .ipynb - Jupyter Notebooks (JSON parsing)
 
 Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 11.1, 11.2, 11.3, 11.4
 """
@@ -18,15 +23,16 @@ from pydantic import BaseModel
 import boto3
 from botocore.exceptions import ClientError
 
-from app.services.document_status_manager import (
+from app.services.document.document_status_manager import (
     DocumentStatusManager,
     DocumentStatus
 )
-from app.services.auth_service import (
+from app.services.auth.auth_service import (
     CurrentUser,
     get_current_user,
     require_admin,
 )
+from app.services.document.file_processors import SUPPORTED_FILE_TYPES, ProcessorFactory
 
 
 # Configure logging
@@ -48,13 +54,46 @@ AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 class UploadResponse(BaseModel):
     doc_id: str
     filename: str
+    file_type: str
     status: str
     message: str
+
+
+def validate_file_type(filename: str) -> tuple[str, dict]:
+    """
+    Validate file type and return extension with config.
+    
+    Args:
+        filename: Original filename
+        
+    Returns:
+        Tuple of (extension, config dict)
+        
+    Raises:
+        HTTPException: If file type not supported
+    """
+    if not filename:
+        raise HTTPException(status_code=400, detail="Filename is required")
+    
+    # Extract extension
+    ext = ""
+    if "." in filename:
+        ext = "." + filename.lower().rsplit(".", 1)[-1]
+    
+    if ext not in SUPPORTED_FILE_TYPES:
+        supported = ", ".join(SUPPORTED_FILE_TYPES.keys())
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Allowed: {supported}"
+        )
+    
+    return ext, SUPPORTED_FILE_TYPES[ext]
 
 
 class DocumentItem(BaseModel):
     doc_id: str
     filename: str
+    file_type: Optional[str] = ".pdf"  # Default for backward compatibility
     status: str
     uploaded_at: str
     uploaded_by: str
@@ -100,11 +139,17 @@ async def upload_document(
     admin_user: CurrentUser = Depends(require_admin),  # ✅ Require admin role
 ):
     """
-    Upload a PDF document for processing WITH ROLLBACK SUPPORT.
+    Upload a document for processing WITH ROLLBACK SUPPORT.
     
     REQUIRES: Admin role (Cognito 'admin' group)
     
-    - Validates file is PDF
+    Supported file types:
+    - .pdf - PDF documents (processed via Textract)
+    - .md - Markdown files (direct text parsing)
+    - .ipynb - Jupyter Notebooks (JSON parsing)
+    
+    Flow:
+    - Validates file type is supported
     - Uploads to S3 with unique doc_id
     - Creates DynamoDB record with UPLOADED status
     - Sends message to SQS for processing
@@ -114,12 +159,9 @@ async def upload_document(
     """
     # Get uploader from authenticated user
     uploaded_by = admin_user.email or admin_user.user_id
-    # Validate file type
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF files are allowed"
-        )
+    
+    # Validate file type (supports .pdf, .md, .ipynb)
+    file_ext, file_config = validate_file_type(file.filename)
     
     # Generate unique document ID
     doc_id = str(uuid.uuid4())
@@ -145,18 +187,17 @@ async def upload_document(
     
     try:
         # Step 1: Upload to S3
-        logger.info(f"Starting S3 upload: doc_id={doc_id}, filename={file.filename}, size={len(content)} bytes")
-        # S3 metadata only supports ASCII - don't store filename here
-        # Filename is already stored in DynamoDB with full Unicode support
+        logger.info(f"Starting S3 upload: doc_id={doc_id}, filename={file.filename}, type={file_ext}, size={len(content)} bytes")
         s3_client.put_object(
             Bucket=S3_BUCKET,
             Key=s3_key,
             Body=content,
-            ContentType="application/pdf",
+            ContentType=file_config["content_type"],
             Metadata={
                 "doc_id": doc_id,
-                "uploaded_by": uploaded_by
-                # Note: original_filename removed - stored in DynamoDB instead
+                "uploaded_by": uploaded_by,
+                "file_type": file_ext,
+                "processor": file_config["processor"]
             }
         )
         s3_uploaded = True
@@ -167,10 +208,12 @@ async def upload_document(
         status_manager.create_document(
             doc_id=doc_id,
             filename=file.filename,
-            uploaded_by=uploaded_by
+            uploaded_by=uploaded_by,
+            file_type=file_ext,
+            processor=file_config["processor"]
         )
         dynamo_created = True
-        logger.info(f"DynamoDB record created: doc_id={doc_id}, status=UPLOADED")
+        logger.info(f"DynamoDB record created: doc_id={doc_id}, file_type={file_ext}, status=UPLOADED")
         
         # Step 3: Send SQS message
         logger.info(f"Sending SQS message: doc_id={doc_id}")
@@ -195,8 +238,9 @@ async def upload_document(
         return UploadResponse(
             doc_id=doc_id,
             filename=file.filename,
+            file_type=file_ext,
             status=DocumentStatus.UPLOADED.value,
-            message="Document uploaded successfully. Processing will begin shortly."
+            message=f"Document uploaded successfully ({file_ext}). Processing will begin shortly."
         )
         
     except Exception as e:
@@ -296,6 +340,7 @@ async def list_documents(
         DocumentItem(
             doc_id=doc.get("doc_id", ""),
             filename=doc.get("filename", ""),
+            file_type=doc.get("file_type", ".pdf"),
             status=doc.get("status", ""),
             uploaded_at=doc.get("uploaded_at", ""),
             uploaded_by=doc.get("uploaded_by", ""),
@@ -399,6 +444,7 @@ async def get_document(
     return DocumentItem(
         doc_id=doc.get("doc_id", ""),
         filename=doc.get("filename", ""),
+        file_type=doc.get("file_type", ".pdf"),
         status=doc.get("status", ""),
         uploaded_at=doc.get("uploaded_at", ""),
         uploaded_by=doc.get("uploaded_by", ""),

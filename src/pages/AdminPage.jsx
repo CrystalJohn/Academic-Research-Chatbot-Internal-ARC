@@ -6,6 +6,28 @@ import { Card, CardBody, Progress, Checkbox, Spinner, Pagination } from '@heroui
 import { motion, AnimatePresence } from 'framer-motion'
 import Sidebar from '../components/Sidebar'
 
+// Supported file types configuration
+const SUPPORTED_EXTENSIONS = ['.pdf', '.md', '.ipynb']
+const ACCEPT_STRING = SUPPORTED_EXTENSIONS.join(',')
+
+// File type icons and colors
+const FILE_TYPE_CONFIG = {
+  '.pdf': { color: 'bg-red-100 text-red-600', label: 'PDF' },
+  '.md': { color: 'bg-blue-100 text-blue-600', label: 'MD' },
+  '.ipynb': { color: 'bg-orange-100 text-orange-600', label: 'IPYNB' },
+}
+
+const getFileExtension = (filename) => {
+  if (!filename) return '.pdf'
+  const ext = '.' + filename.toLowerCase().split('.').pop()
+  return SUPPORTED_EXTENSIONS.includes(ext) ? ext : '.pdf'
+}
+
+const getFileTypeConfig = (filename) => {
+  const ext = getFileExtension(filename)
+  return FILE_TYPE_CONFIG[ext] || FILE_TYPE_CONFIG['.pdf']
+}
+
 function AdminPage() {
   const navigate = useNavigate()
   const [documents, setDocuments] = useState([])
@@ -82,22 +104,33 @@ function AdminPage() {
   }
 
   const handleFiles = async (files) => {
-    const pdfFiles = files.filter(
-      (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
-    )
-    if (pdfFiles.length === 0) return alert('Please select PDF files only')
+    // Filter for supported file types
+    const validFiles = files.filter((f) => {
+      const ext = '.' + f.name.toLowerCase().split('.').pop()
+      return SUPPORTED_EXTENSIONS.includes(ext)
+    })
+    
+    if (validFiles.length === 0) {
+      return alert(`Please select valid files: ${SUPPORTED_EXTENSIONS.join(', ')}`)
+    }
 
     setUploading(true)
     setUploadProgress(
-      pdfFiles.map((f) => ({ filename: f.name, size: f.size, status: 'uploading', progress: 0 }))
+      validFiles.map((f) => ({ 
+        filename: f.name, 
+        size: f.size, 
+        status: 'uploading', 
+        progress: 0,
+        fileType: getFileExtension(f.name)
+      }))
     )
 
-    for (let i = 0; i < pdfFiles.length; i++) {
+    for (let i = 0; i < validFiles.length; i++) {
       try {
         setUploadProgress((prev) =>
           prev.map((p, idx) => (idx === i ? { ...p, progress: 65 } : p))
         )
-        await adminService.uploadDocument(pdfFiles[i])
+        await adminService.uploadDocument(validFiles[i])
         setUploadProgress((prev) =>
           prev.map((p, idx) => (idx === i ? { ...p, status: 'success', progress: 100 } : p))
         )
@@ -162,13 +195,15 @@ function AdminPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                 </svg>
               </div>
-              <p className="text-gray-800 font-medium mb-1">Drag & drop PDF files here</p>
-              <p className="text-sm text-gray-500 mb-4">Supports multiple PDF files. Max size: 50MB per file.</p>
+              <p className="text-gray-800 font-medium mb-1">Drag & drop files here</p>
+              <p className="text-sm text-gray-500 mb-4">
+                Supports: PDF, Markdown (.md), Jupyter Notebooks (.ipynb). Max: 50MB per file.
+              </p>
               <label className="inline-block cursor-pointer">
                 <span className="px-6 py-2.5 bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg transition-colors">
                   Browse Files
                 </span>
-                <input type="file" className="hidden" accept=".pdf" multiple disabled={uploading} onChange={handleFileInput} />
+                <input type="file" className="hidden" accept={ACCEPT_STRING} multiple disabled={uploading} onChange={handleFileInput} />
               </label>
             </div>
 
@@ -185,10 +220,8 @@ function AdminPage() {
                         item.status === 'success' ? 'bg-green-50' : item.status === 'error' ? 'bg-red-50' : 'bg-gray-50'
                       }`}
                     >
-                      <div className="w-10 h-10 bg-red-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                        <svg className="w-5 h-5 text-red-600" fill="currentColor" viewBox="0 0 20 20">
-                          <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
-                        </svg>
+                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${getFileTypeConfig(item.filename).color}`}>
+                        <span className="text-xs font-bold">{getFileTypeConfig(item.filename).label}</span>
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-gray-800 truncate">{item.filename}</p>
@@ -300,7 +333,7 @@ function AdminPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
                 <p className="text-gray-500">No documents found</p>
-                <p className="text-sm text-gray-400 mt-1">Upload some PDFs to get started</p>
+                <p className="text-sm text-gray-400 mt-1">Upload PDF, Markdown, or Jupyter files to get started</p>
               </div>
             ) : (
               <>
@@ -328,9 +361,14 @@ function AdminPage() {
                           className="hover:bg-gray-50/50 transition-colors"
                         >
                           <td className="px-6 py-4">
-                            <p className="text-sm font-medium text-gray-800 truncate max-w-xs" title={doc.filename}>
-                              {doc.filename}
-                            </p>
+                            <div className="flex items-center gap-2">
+                              <span className={`px-1.5 py-0.5 text-xs font-medium rounded ${getFileTypeConfig(doc.filename).color}`}>
+                                {getFileTypeConfig(doc.filename).label}
+                              </span>
+                              <p className="text-sm font-medium text-gray-800 truncate max-w-xs" title={doc.filename}>
+                                {doc.filename}
+                              </p>
+                            </div>
                           </td>
                           <td className="px-6 py-4">
                             <span className="text-sm text-gray-500 font-mono">doc_{doc.doc_id.slice(0, 7)}</span>
