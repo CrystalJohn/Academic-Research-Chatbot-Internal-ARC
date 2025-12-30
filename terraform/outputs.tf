@@ -55,6 +55,11 @@ output "chat_history_table_name" {
   value       = module.dynamodb.chat_history_table_name
 }
 
+output "syllabus_entities_table_name" {
+  description = "Name of the SyllabusEntities DynamoDB table"
+  value       = module.dynamodb.syllabus_entities_table_name
+}
+
 # Cognito Outputs
 output "cognito_user_pool_id" {
   description = "ID of the Cognito User Pool"
