@@ -17,6 +17,7 @@ import os
 import uuid
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Depends
 from pydantic import BaseModel
@@ -452,3 +453,251 @@ async def get_document(
         chunk_count=doc.get("chunk_count"),
         error_message=doc.get("error_message")
     )
+
+
+@router.delete("/documents/{doc_id}")
+async def delete_document(
+    doc_id: str,
+    admin_user: CurrentUser = Depends(require_admin),
+):
+    """
+    Delete a document and all associated resources.
+    
+    REQUIRES: Admin role (Cognito 'admin' group)
+    
+    This will:
+    1. Delete the document record from DynamoDB
+    2. Delete the file from S3
+    3. Delete embeddings from Qdrant (if any)
+    """
+    status_manager = get_status_manager()
+    s3_client = get_s3_client()
+    
+    # Get document first
+    doc = status_manager.get_document(doc_id)
+    if not doc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document {doc_id} not found"
+        )
+    
+    errors = []
+    
+    # 1. Delete from S3
+    try:
+        s3_key = f"uploads/{doc_id}/{doc['filename']}"
+        s3_client.delete_object(Bucket=S3_BUCKET, Key=s3_key)
+        logger.info(f"Deleted S3 object: s3://{S3_BUCKET}/{s3_key}")
+    except ClientError as e:
+        error_msg = f"Failed to delete S3 object: {str(e)}"
+        logger.warning(error_msg)
+        errors.append(error_msg)
+    
+    # 2. Delete embeddings from Qdrant
+    try:
+        from app.services.search.qdrant_client import QdrantVectorStore
+        qdrant = QdrantVectorStore()
+        deleted_count = qdrant.delete_document(doc_id)
+        logger.info(f"Deleted {deleted_count} embeddings from Qdrant for doc_id={doc_id}")
+    except Exception as e:
+        error_msg = f"Failed to delete Qdrant embeddings: {str(e)}"
+        logger.warning(error_msg)
+        errors.append(error_msg)
+    
+    # 3. Delete from DynamoDB
+    try:
+        status_manager._client.delete_item(
+            TableName=status_manager.table_name,
+            Key={
+                "doc_id": {"S": doc_id},
+                "sk": {"S": "METADATA"}
+            }
+        )
+        logger.info(f"Deleted DynamoDB record: doc_id={doc_id}")
+    except ClientError as e:
+        logger.error(f"Failed to delete DynamoDB record: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete document record: {str(e)}"
+        )
+    
+    return {
+        "doc_id": doc_id,
+        "message": "Document deleted successfully",
+        "warnings": errors if errors else None
+    }
+
+
+class UpdateDocumentRequest(BaseModel):
+    """Request body for updating document metadata."""
+    filename: Optional[str] = None
+    status: Optional[str] = None
+
+
+@router.patch("/documents/{doc_id}")
+async def update_document(
+    doc_id: str,
+    request: UpdateDocumentRequest,
+    admin_user: CurrentUser = Depends(require_admin),
+):
+    """
+    Update document metadata.
+    
+    REQUIRES: Admin role (Cognito 'admin' group)
+    
+    Updatable fields:
+    - filename: Rename the document
+    - status: Change status (for retry failed documents)
+    """
+    status_manager = get_status_manager()
+    
+    # Get document first
+    doc = status_manager.get_document(doc_id)
+    if not doc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document {doc_id} not found"
+        )
+    
+    # Build update expression
+    update_parts = []
+    expression_names = {}
+    expression_values = {}
+    
+    if request.filename:
+        update_parts.append("#filename = :filename")
+        expression_names["#filename"] = "filename"
+        expression_values[":filename"] = {"S": request.filename}
+    
+    if request.status:
+        # Validate status
+        try:
+            new_status = DocumentStatus(request.status.upper())
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status. Must be one of: {[s.value for s in DocumentStatus]}"
+            )
+        update_parts.append("#status = :status")
+        expression_names["#status"] = "status"
+        expression_values[":status"] = {"S": new_status.value}
+    
+    if not update_parts:
+        raise HTTPException(
+            status_code=400,
+            detail="No fields to update"
+        )
+    
+    # Add updated_at timestamp
+    update_parts.append("#updated_at = :updated_at")
+    expression_names["#updated_at"] = "updated_at"
+    expression_values[":updated_at"] = {"S": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+    
+    update_expression = "SET " + ", ".join(update_parts)
+    
+    try:
+        response = status_manager._client.update_item(
+            TableName=status_manager.table_name,
+            Key={
+                "doc_id": {"S": doc_id},
+                "sk": {"S": "METADATA"}
+            },
+            UpdateExpression=update_expression,
+            ExpressionAttributeNames=expression_names,
+            ExpressionAttributeValues=expression_values,
+            ReturnValues="ALL_NEW"
+        )
+        
+        updated_doc = status_manager._parse_item(response.get("Attributes", {}))
+        
+        return DocumentItem(
+            doc_id=updated_doc.get("doc_id", ""),
+            filename=updated_doc.get("filename", ""),
+            file_type=updated_doc.get("file_type", ".pdf"),
+            status=updated_doc.get("status", ""),
+            uploaded_at=updated_doc.get("uploaded_at", ""),
+            uploaded_by=updated_doc.get("uploaded_by", ""),
+            page_count=updated_doc.get("page_count"),
+            chunk_count=updated_doc.get("chunk_count"),
+            error_message=updated_doc.get("error_message")
+        )
+        
+    except ClientError as e:
+        logger.error(f"Failed to update document: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update document: {str(e)}"
+        )
+
+
+@router.post("/documents/{doc_id}/reprocess")
+async def reprocess_document(
+    doc_id: str,
+    admin_user: CurrentUser = Depends(require_admin),
+):
+    """
+    Reprocess a failed document.
+    
+    REQUIRES: Admin role (Cognito 'admin' group)
+    
+    This will:
+    1. Reset status to UPLOADED
+    2. Send a new SQS message for processing
+    """
+    status_manager = get_status_manager()
+    
+    # Get document first
+    doc = status_manager.get_document(doc_id)
+    if not doc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document {doc_id} not found"
+        )
+    
+    # Only allow reprocessing of FAILED documents
+    if doc.get("status") not in ["FAILED", "UPLOADED"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only reprocess FAILED or UPLOADED documents. Current status: {doc.get('status')}"
+        )
+    
+    # Reset status to UPLOADED
+    status_manager.update_status(
+        doc_id=doc_id,
+        new_status=DocumentStatus.UPLOADED,
+        validate_transition=False  # Allow any transition for reprocessing
+    )
+    
+    # Send SQS message
+    try:
+        sqs_client = get_sqs_client()
+        s3_key = f"uploads/{doc_id}/{doc['filename']}"
+        
+        message_body = json.dumps({
+            "Records": [{
+                "s3": {
+                    "bucket": {"name": S3_BUCKET},
+                    "object": {"key": s3_key}
+                }
+            }],
+            "doc_id": doc_id
+        })
+        
+        sqs_response = sqs_client.send_message(
+            QueueUrl=SQS_QUEUE_URL,
+            MessageBody=message_body
+        )
+        logger.info(f"Reprocess SQS message sent: doc_id={doc_id}, message_id={sqs_response.get('MessageId')}")
+        
+    except Exception as e:
+        logger.error(f"Failed to send reprocess SQS message: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to queue document for reprocessing: {str(e)}"
+        )
+    
+    return {
+        "doc_id": doc_id,
+        "message": "Document queued for reprocessing",
+        "status": "UPLOADED"
+    }

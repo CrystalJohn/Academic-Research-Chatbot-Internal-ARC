@@ -108,7 +108,80 @@ export async function deleteDocument(docId) {
   })
 
   if (!response.ok) {
-    throw new Error(`Failed to delete document: ${response.status}`)
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `Failed to delete document: ${response.status}`)
+  }
+
+  return await response.json()
+}
+
+/**
+ * Update a document
+ * @param {string} docId - Document ID
+ * @param {Object} data - Update data (filename, status)
+ * @returns {Promise<Object>} Updated document
+ */
+export async function updateDocument(docId, data) {
+  const token = await authService.getAccessToken()
+  
+  const response = await fetch(`${API_URL}/api/admin/documents/${docId}`, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(data)
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `Failed to update document: ${response.status}`)
+  }
+
+  return await response.json()
+}
+
+/**
+ * Reprocess a failed document
+ * @param {string} docId - Document ID
+ * @returns {Promise<Object>} Reprocess result
+ */
+export async function reprocessDocument(docId) {
+  const token = await authService.getAccessToken()
+  
+  const response = await fetch(`${API_URL}/api/admin/documents/${docId}/reprocess`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `Failed to reprocess document: ${response.status}`)
+  }
+
+  return await response.json()
+}
+
+/**
+ * Download a document
+ * @param {string} docId - Document ID
+ * @returns {Promise<Object>} Download URL info
+ */
+export async function downloadDocument(docId) {
+  const token = await authService.getAccessToken()
+  
+  const response = await fetch(`${API_URL}/api/admin/documents/${docId}/download`, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `Failed to get download URL: ${response.status}`)
   }
 
   return await response.json()
@@ -141,5 +214,8 @@ export const adminService = {
   listDocuments,
   getDocument,
   deleteDocument,
+  updateDocument,
+  reprocessDocument,
+  downloadDocument,
   getDocumentStats
 }
