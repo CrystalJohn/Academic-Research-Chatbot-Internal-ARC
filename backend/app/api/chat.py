@@ -11,6 +11,7 @@ Includes automatic model fallback based on budget.
 """
 
 import logging
+import os
 import uuid
 import time
 import json
@@ -235,11 +236,13 @@ def get_rag_service() -> RAGService:
     """Get or create RAG service instance."""
     global _rag_service
     if _rag_service is None:
+        # Use environment variable to configure model, default to sonnet for better quality
+        model = os.getenv("CLAUDE_MODEL", "sonnet")  # Claude 3.5 Sonnet for better responses
         _rag_service = RAGService(
             qdrant_host="localhost",
             qdrant_port=6333,
             region_name="ap-southeast-1",
-            model="sonnet",
+            model=model,
             use_hybrid=False,  # Disabled - BM25 init issue, vector-only works well
             # TODO: Fix BM25 initialization before enabling hybrid
             # bm25_weight=0.3,

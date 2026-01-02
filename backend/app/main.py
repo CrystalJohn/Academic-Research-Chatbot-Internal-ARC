@@ -11,6 +11,8 @@ from app.api.admin import router as admin_router
 from app.api.chat import router as chat_router
 # from app.api.chat_agentic import router as chat_agentic_router  # Disabled for MVP - 3x cost
 from app.api.auth import router as auth_router
+from app.api.syllabus import router as syllabus_router
+from app.api.syllabus_upload import router as syllabus_upload_router
 
 app = FastAPI(
     title="ARC Chatbot API",
@@ -32,6 +34,8 @@ app.include_router(admin_router)
 app.include_router(chat_router)
 # app.include_router(chat_agentic_router)  # Disabled for MVP - 3x cost
 app.include_router(auth_router)
+app.include_router(syllabus_router)
+app.include_router(syllabus_upload_router)
 
 
 @app.get("/health")
